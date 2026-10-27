@@ -1,11 +1,56 @@
+import dotenv from "dotenv";
+
+dotenv.config();
+
 import crypto from "node:crypto";
+import { EventEmitter } from "node:events";
+import fs from "node:fs";
 import http from "node:http";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { CAPABILITIES, registerAgent } from "./src/agent-store.js";
 import { getDb } from "./src/db.js";
-import { createSession, deliverWork, submitMove } from "./src/session-manager.js";
+import { ensureWallet, getBalance } from "./src/ledger.js";
+import {
+  createSession,
+  deliverWork,
+  expireStaleSessions,
+  getSession,
+  submitMove,
+} from "./src/session-manager.js";
 
 const PORT = Number(process.env.PORT ?? 3000);
 const MAX_BODY_BYTES = 1024 * 1024; // 1 MiB
+const INDEX_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "public", "index.html");
+
+// Real-time Ant Farm UI: global emitter + SSE client set.
+const sessionEvents = new EventEmitter();
+sessionEvents.setMaxListeners(0);
+const sseClients = new Set();
+
+sessionEvents.on("session_update", (session) => {
+  const frame = `data: ${JSON.stringify(session)}\n\n`;
+  for (const client of [...sseClients]) {
+    try {
+      client.write(frame);
+    } catch {
+      sseClients.delete(client);
+    }
+  }
+});
+
+function handleStream(req, res) {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+  res.write(": connected\n\n");
+  sseClients.add(res);
+  req.on("close", () => {
+    sseClients.delete(res);
+  });
+}
 
 function stableStringify(value) {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
@@ -48,13 +93,17 @@ function readBody(req) {
 function sessionErrorStatus(code) {
   if (code === "SESSION_NOT_FOUND" || code === "SELLER_NOT_FOUND") return 404;
   if (code === "NOT_PARTICIPANT" || code === "SELLER_ONLY") return 403;
-  if (code === "INVALID_STATE") return 409;
-  if (code === "BUDGET_EXCEEDED" || code === "FLOOR_EXCEEDED") return 422;
+  if (code === "INVALID_STATE" || code === "NO_ESCROW") return 409;
+  if (code === "BUDGET_EXCEEDED" || code === "FLOOR_EXCEEDED" || code === "INSUFFICIENT_FUNDS") {
+    return 422;
+  }
+  if (code === "INSPECTOR_UNAVAILABLE") return 503;
   if (code === "INTERNAL_ERROR") return 500;
   return 400;
 }
 
-export function createApp(db = getDb()) {
+export function createApp(db = getDb(), options = {}) {
+  const appInspector = options.verifyDelivery;
   const findKey = db.prepare("SELECT agent_id, request_hash, response_json FROM idempotency_keys WHERE key = ?");
   const storeKey = db.prepare(
     "INSERT INTO idempotency_keys (key, agent_id, request_hash, response_json, created_at) VALUES (?, ?, ?, ?, ?)"
@@ -116,6 +165,7 @@ export function createApp(db = getDb()) {
   }
 
   async function handleRegister(req, res) {
+    expireStaleSessions(db);
     const idempotencyKey = requireIdempotencyKey(req, res);
     if (!idempotencyKey) return;
 
@@ -131,6 +181,8 @@ export function createApp(db = getDb()) {
       sendJson(res, status, { error: result.error });
       return;
     }
+
+    ensureWallet(result.agent.agentId, db);
 
     const payload = { agent: result.agent, hexSeal: result.agent.hexSeal };
     storeKey.run(
@@ -157,12 +209,12 @@ export function createApp(db = getDb()) {
     const rows = capability
       ? db
           .prepare(
-            "SELECT agent_id, capability, floor_price, hex_seal FROM agents WHERE status = 'ACTIVE' AND capability = ? ORDER BY agent_id"
+            "SELECT agent_id, capability, floor_price, hex_seal, stake_balance, title, description, category FROM agents WHERE status = 'ACTIVE' AND capability = ? ORDER BY stake_balance DESC, agent_id"
           )
           .all(capability)
       : db
           .prepare(
-            "SELECT agent_id, capability, floor_price, hex_seal FROM agents WHERE status = 'ACTIVE' ORDER BY agent_id"
+            "SELECT agent_id, capability, floor_price, hex_seal, stake_balance, title, description, category FROM agents WHERE status = 'ACTIVE' ORDER BY stake_balance DESC, agent_id"
           )
           .all();
     sendJson(res, 200, {
@@ -171,22 +223,27 @@ export function createApp(db = getDb()) {
         capability: row.capability,
         floorPrice: row.floor_price,
         hexSeal: row.hex_seal,
+        stakeBalance: row.stake_balance,
+        ...(row.title != null ? { title: row.title } : {}),
+        ...(row.description != null ? { description: row.description } : {}),
+        ...(row.category != null ? { category: row.category } : {}),
       })),
     });
   }
 
   async function handleCreateSession(req, res) {
+    expireStaleSessions(db);
     const idempotencyKey = requireIdempotencyKey(req, res);
     if (!idempotencyKey) return;
 
     const body = await parseJsonBody(req, res);
     if (!body) return;
 
-    const { buyerId, sellerId, brief, budget } = body;
+    const { buyerId, sellerId, brief, budget, quantity } = body;
     const requestHash = hashRequest(body);
     if (checkIdempotency(idempotencyKey, requestHash, res)) return;
 
-    const result = createSession(buyerId, sellerId, brief, { db, budget });
+    const result = createSession(buyerId, sellerId, brief, { db, budget, quantity });
     if (!result.success) {
       sendJson(res, sessionErrorStatus(result.error.code), { error: result.error });
       return;
@@ -200,10 +257,12 @@ export function createApp(db = getDb()) {
       JSON.stringify(payload),
       new Date().toISOString()
     );
+    sessionEvents.emit("session_update", result.session);
     sendJson(res, 201, payload);
   }
 
   async function handleNegotiate(req, res, sessionId) {
+    expireStaleSessions(db);
     const idempotencyKey = requireIdempotencyKey(req, res);
     if (!idempotencyKey) return;
 
@@ -232,10 +291,12 @@ export function createApp(db = getDb()) {
       JSON.stringify(payload),
       new Date().toISOString()
     );
+    sessionEvents.emit("session_update", getSession(sessionId, { db }) ?? result.session);
     sendJson(res, 200, payload);
   }
 
   async function handleDeliver(req, res, sessionId) {
+    expireStaleSessions(db);
     const idempotencyKey = requireIdempotencyKey(req, res);
     if (!idempotencyKey) return;
 
@@ -246,7 +307,10 @@ export function createApp(db = getDb()) {
     const requestHash = hashRequest({ sessionId, agentId, payload });
     if (checkIdempotency(idempotencyKey, requestHash, res)) return;
 
-    const result = deliverWork(sessionId, agentId, payload, { db });
+    const result = await deliverWork(sessionId, agentId, payload, {
+      db,
+      ...(appInspector ? { verifyDelivery: appInspector } : {}),
+    });
     if (!result.success) {
       sendJson(res, sessionErrorStatus(result.error.code), { error: result.error });
       return;
@@ -265,7 +329,57 @@ export function createApp(db = getDb()) {
       JSON.stringify(response),
       new Date().toISOString()
     );
+    sessionEvents.emit("session_update", getSession(sessionId, { db }) ?? result.session);
     sendJson(res, 200, response);
+  }
+
+  function handleGetSessionState(_req, res, sessionId) {
+    const session = getSession(sessionId, { db });
+    if (!session) {
+      sendJson(res, 404, {
+        error: { code: "SESSION_NOT_FOUND", message: `Session "${sessionId}" was not found.` },
+      });
+      return;
+    }
+    sendJson(res, 200, {
+      sessionId: session.sessionId,
+      buyerId: session.buyerId,
+      sellerId: session.sellerId,
+      status: session.status,
+      agreedPrice: session.agreedPrice,
+      brief: session.brief,
+      buyerBudget: session.buyerBudget,
+      quantity: session.quantity,
+      ...(session.deliveryRejectReason ? { reason: session.deliveryRejectReason } : {}),
+    });
+  }
+
+  function handleIndex(_req, res) {
+    let html;
+    try {
+      html = fs.readFileSync(INDEX_PATH);
+    } catch {
+      sendJson(res, 500, {
+        error: { code: "INDEX_MISSING", message: "Dashboard is not built." },
+      });
+      return;
+    }
+    res.writeHead(200, {
+      "Content-Type": "text/html; charset=utf-8",
+      "Content-Length": html.length,
+    });
+    res.end(html);
+  }
+
+  function handleGetWallet(_req, res, agentId) {
+    if (typeof agentId !== "string" || agentId.trim() === "") {
+      sendJson(res, 400, {
+        error: { code: "INVALID_AGENT_ID", message: "Agent ID must be a non-empty string." },
+      });
+      return;
+    }
+    const balance = getBalance(agentId, db);
+    sendJson(res, 200, { agentId, balance });
   }
 
   return http.createServer(async (req, res) => {
@@ -277,8 +391,16 @@ export function createApp(db = getDb()) {
         sendJson(res, 200, { ok: true });
         return;
       }
+      if (req.method === "GET" && (path === "/" || path === "/index.html")) {
+        handleIndex(req, res);
+        return;
+      }
       if (req.method === "GET" && path === "/api/agents") {
         handleListAgents(req, res, url.searchParams);
+        return;
+      }
+      if (req.method === "GET" && path === "/api/stream") {
+        handleStream(req, res);
         return;
       }
       if (req.method === "POST" && path === "/api/agents/register") {
@@ -297,6 +419,16 @@ export function createApp(db = getDb()) {
       const deliverMatch = path.match(/^\/api\/sessions\/([^/]+)\/deliver$/);
       if (req.method === "POST" && deliverMatch) {
         await handleDeliver(req, res, decodeURIComponent(deliverMatch[1]));
+        return;
+      }
+      const stateMatch = path.match(/^\/api\/sessions\/([^/]+)\/state$/);
+      if (req.method === "GET" && stateMatch) {
+        handleGetSessionState(req, res, decodeURIComponent(stateMatch[1]));
+        return;
+      }
+      const walletMatch = path.match(/^\/api\/wallets\/([^/]+)$/);
+      if (req.method === "GET" && walletMatch) {
+        handleGetWallet(req, res, decodeURIComponent(walletMatch[1]));
         return;
       }
 

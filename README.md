@@ -1,77 +1,96 @@
-# Bazaar
+# Bazaar Protocol: The Trust Layer for AI Agent Commerce
 
-A sandboxed marketplace where AI buyer and seller agents negotiate, verify delivery, and settle inside rules the sandbox enforces.
+A sandboxed marketplace where a Buyer Agent hires a Seller Agent, Meta's Vision AI verifies the delivered work, and escrow funds release only when the work checks out.
 
-Bazaar is a trust layer for creative procurement in ad automation: an
-ad-automation buyer agent buys creatives from seller agents, and no money
-moves until an Inspector confirms the creative matches the brief.
+Built for the Meta Global AI Developer Hackathon. Pure Node.js (ES modules) + SQLite + vanilla JS, zero frameworks, zero new dependencies.
 
-## Run it
+## The Impact (The Problem)
 
-Stdlib-only Python 3.12 — no installs, no virtualenv needed.
+AI agents can already negotiate and pay each other, but they have no infrastructure for **trust**:
+
+- A buyer agent that pays on delivery has no way to verify the work is real.
+- A seller agent that delivers first has no guarantee of getting paid.
+- A hallucinated budget or a forged delivery can drain funds with no recourse.
+
+Bazaar closes that gap with a trust protocol enforced by code, not promises: money locks in escrow up front, an AI Inspector verifies the delivery against the brief, and funds move only on a pass.
+
+## The Meta AI Solution
+
+Meta's Muse Spark Vision AI acts as the protocol's autonomous Inspector. Every visual delivery is judged against the buyer brief with a strict YES/NO verdict, backed by prompt-injection defense so sellers cannot talk their way to a pass.
+
+Two mechanisms make cheating unprofitable and failures safe:
+
+- **Fail-Frozen** - if the Vision API is unreachable or returns an inconclusive verdict, the escrow stays locked. Funds are never settled on an inconclusive verdict, and never move without a decision.
+- **Stake Slashing** - if the Inspector returns NO, the buyer is refunded in full and 50 credits are slashed from the seller's stake balance as a penalty. Scamming costs more than it can earn.
+
+Text-only deliveries bypass vision and settle through the same escrow path, so every trade follows one audited flow.
+
+## Technical Depth (Architecture)
+
+The protocol runs as five phases: **Register** (sellers join with a capability, floor price, and cryptographic hex seal), **Negotiate** (OFFER / ACCEPT / WALK moves), **Escrow lock** (agreed price locks atomically on ACCEPT), **Deliver** (payload inspected by Meta Vision AI), **Settle** (SETTLED on YES, REJECTED plus slash on NO).
+
+Engineering choices that make it production-ready:
+
+- **Zero Polling** - a Server-Sent Events stream (`GET /api/stream`) pushes every session update to the dashboard's Live Feed the instant it happens. No polling loops, no stale state.
+- **Referee** - budgets and floor prices are enforced at the code level. Any move below the seller's floor or above the buyer's budget is rejected (`FLOOR_EXCEEDED`, `BUDGET_EXCEEDED`) before it can touch funds.
+- **Safe Migrations** - agent profiles (`title`, `description`, `category`) live in decoupled columns added via idempotent backfill migrations, stored safely alongside financial data without touching the frozen ledger or escrow logic.
+- **Idempotency** - every POST endpoint requires an `Idempotency-Key`. Network retries replay the original response instead of double-charging, double-registering, or double-emitting.
+- **Expiry safety net** - sessions stuck in NEGOTIATING or ESCROW_LOCKED for 10 minutes auto-expire (locked funds refund first), so money can never strand forever.
+
+Key endpoints:
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/` | Dashboard UI (Trust Cards + Live Feed) |
+| `GET` | `/health` | Liveness probe |
+| `GET` | `/api/stream` | SSE session-update stream |
+| `GET` | `/api/agents[?capability=]` | List active agents |
+| `POST` | `/api/agents/register` | Register a seller (idempotent) |
+| `POST` | `/api/sessions` | Open a session (idempotent) |
+| `POST` | `/api/sessions/:id/negotiate` | OFFER / ACCEPT / WALK (idempotent) |
+| `POST` | `/api/sessions/:id/deliver` | Deliver + Vision-inspect + settle (idempotent) |
+| `GET` | `/api/sessions/:id/state` | Session state projection |
+| `GET` | `/api/wallets/:agentId` | Wallet balance |
+
+## The Demo (How to run)
+
+Prerequisites: Node.js 18+ and a `.env` file with `MODEL_API_KEY`, `META_BASE_URL`, and `META_MODEL` (Meta Vision credentials for live inspection).
 
 ```sh
-# Live market + viewer (tries live models, falls back to honest standbys)
-python3 -m src.server --port 8000
-# open http://127.0.0.1:8000 in a browser
+npm install
 
-# Fully offline run (deterministic standbys, labelled "standby" in the UI)
-python3 -m src.server --port 8000 --offline
+# Terminal 1 - start the protocol server
+node server.mjs
+# Bazaar Registry listening on http://127.0.0.1:3000
 
-# Terminal demo: run deals and print the transcript
-python3 -m src.demo --deals 2 --offline
-
-# Tests
-python3 -m unittest discover -s tests
+# Terminal 2 - unleash the swarm (needs the server running)
+node swarm.mjs
+# Autonomous buyers open sessions, sellers deliver, scammers get slashed
 ```
 
-## How a deal works
+Then open **http://127.0.0.1:3000** in a browser and watch the Live SSE Feed: honest trades settle in real time while scam deliveries get rejected and slashed, all pushed instantly with zero polling.
 
-1. **Brief** — product, market, 1080x1080 format, required objects, integer
-   budget, deadline (`src/brief.py`).
-2. **Negotiation** — up to three sellers make `OFFER`s; the buyer `ACCEPT`s,
-   counters, or `WALK`s. Every move carries a model-written reason, checked
-   by the referee (`src/negotiation.py`, `src/agents/buyer.py`,
-   `src/agents/seller.py`).
-3. **Escrow** — the price locks in integer simulated credits. The ledger
-   invariant `balances + locks = reserve` is re-checked on every move and
-   shown live in the UI (`src/ledger.py`).
-4. **Deliverable** — the winning seller produces Muse Image output
-   (`src/agents/images.py`).
-5. **Inspection** — format and hash run as plain code; object presence runs
-   through SAM 3.1; compliance runs through Muse Spark vision as yes/no with
-   a reason. Artistic quality is never judged (`src/inspector.py`,
-   `src/agents/vision.py`).
-6. **One retry** — a rejected creative gets exactly one regeneration with
-   the inspection feedback, then the escrow refunds.
-7. **Settlement + reputation** — passed deals settle to the seller; sellers
-   re-rank after every deal (`src/reputation.py`).
-8. **Live viewer** — `public/viewer.html` reads the `GET /events`
-   server-sent event stream only. No fetch, no polling (enforced by test).
+Verify the protocol any time with the automated suite:
 
-The **referee** (`src/referee.py`) validates every move on four checks in
-order: token, menu (legal moves for the phase), limits (budget, deadline,
-three-seller cap, deliverable size), schema (negotiation moves need a
-written reason).
+```sh
+npm test   # 70/70 passing (node:test, no framework)
+```
 
-## Model calls live only in `src/agents/`
+## Project Structure
 
-`tests/test_agents_isolation.py` fails the build if any file outside
-`src/agents/` touches the network or model credentials. Everything else is
-plain code.
-
-Live calls go to `META_BASE_URL` (`.env`: `MODEL_API_KEY`, `META_MODEL`).
-When the API is unreachable, each adapter falls back to a deterministic
-standby and labels its output `simulated` end to end, so the UI always says
-which path produced a reason, image, or verdict. `BAZAAR_OFFLINE=1` forces
-standby mode. A circuit breaker keeps live mode fast after the first
-failed call.
-
-SAM 3.1: `src/agents/vision.py::sam_segment_count` uses the `sam3` package
-when installed and reports its mask count as inspection evidence;
-otherwise the standby label is shown.
+```
+server.mjs              HTTP API + SSE stream + static serving (stdlib http, no framework)
+src/agent-store.js      Registry: validation, hex seals, profiles, stake balances
+src/session-manager.js  Protocol core: sessions, referee, escrow transitions (frozen)
+src/ledger.js           Wallets: lock / release / refund / slash, all atomic (frozen)
+src/inspector.js        Meta Vision client: YES/NO verdicts, fail-frozen (frozen)
+src/db.js               SQLite schema, safe backfill migrations, session TTL
+public/index.html       Dark-mode dashboard: Trust Cards + Live SSE Feed
+swarm.mjs               Autonomous trading loop: honest sellers and scammers
+test/*.test.mjs         Automated suite: registry, sessions, delivery, ledger,
+                        inspector, static serving, SSE stream
+```
 
 ## Out of scope
 
-Real money, crypto, on-chain settlement · Meta Ads Manager integration ·
-judging artistic quality · more than three sellers.
+Real money, crypto, on-chain settlement. Artistic-quality judging (the Inspector checks brief-match only). More than the five listed capabilities (`image_gen`, `video_gen`, `text_gen`, `doc_gen`, `report_gen`).

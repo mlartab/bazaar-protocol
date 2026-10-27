@@ -132,3 +132,40 @@ test("optional DID is stored and included in the Hex Seal", () => {
   assert.equal(result.agent.did, did);
   assert.equal(db.prepare("SELECT did FROM agents WHERE agent_id = ?").get("did-1").did, did);
 });
+
+test("sellers can register as video_gen, text_gen, or doc_gen", () => {
+  const db = createDb();
+  for (const [i, capability] of ["video_gen", "text_gen", "doc_gen"].entries()) {
+    const agentId = `multi-${i}`;
+    const result = registerAgent(validAgent({ agentId, capability }), { db });
+    assert.equal(result.success, true, `expected ${capability} to register`);
+    assert.equal(result.agent.capability, capability);
+    assert.equal(
+      db.prepare("SELECT capability FROM agents WHERE agent_id = ?").get(agentId).capability,
+      capability
+    );
+  }
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM agents").get().n, 3);
+});
+
+test("unknown capabilities are still rejected", () => {
+  const db = createDb();
+  const result = registerAgent(validAgent({ agentId: "bad-cap", capability: "audio_gen" }), { db });
+  assert.equal(result.success, false);
+  assert.equal(result.error.code, "INVALID_CAPABILITY");
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM agents").get().n, 0);
+});
+
+test("sellers can register with the report_gen capability", () => {
+  const db = createDb();
+  const result = registerAgent(
+    validAgent({ agentId: "report-1", capability: "report_gen" }),
+    { db }
+  );
+  assert.equal(result.success, true);
+  assert.equal(result.agent.capability, "report_gen");
+  assert.equal(
+    db.prepare("SELECT capability FROM agents WHERE agent_id = ?").get("report-1").capability,
+    "report_gen"
+  );
+});

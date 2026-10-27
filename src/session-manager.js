@@ -1,6 +1,9 @@
 import crypto from "node:crypto";
-import { getDb } from "./db.js";
+import { SESSION_TTL_MS, getDb } from "./db.js";
 import { verifyDelivery } from "./inspector.js";
+import { creditWallet, lockFunds, refundFunds, releaseFunds, slashStake } from "./ledger.js";
+
+export const STAKE_SLASH_AMOUNT = 50;
 
 export const SESSION_STATUSES = [
   "NEGOTIATING",
@@ -8,6 +11,7 @@ export const SESSION_STATUSES = [
   "DELIVERED",
   "SETTLED",
   "REJECTED",
+  "EXPIRED",
 ];
 
 export const MOVE_ACTIONS = ["OFFER", "ACCEPT", "WALK"];
@@ -20,6 +24,14 @@ function resolveBudget(brief, optionsBudget) {
     return brief.budget;
   }
   return undefined;
+}
+
+function resolveQuantity(brief, optionsQuantity) {
+  if (optionsQuantity !== undefined) return optionsQuantity;
+  if (brief !== null && typeof brief === "object" && !Array.isArray(brief)) {
+    if (brief.quantity !== undefined) return brief.quantity;
+  }
+  return 1;
 }
 
 function serializeBrief(brief) {
@@ -50,6 +62,14 @@ export function createSession(buyerId, sellerId, brief, options = {}) {
     );
   }
 
+  const quantity = resolveQuantity(brief, options.quantity);
+  if (!Number.isInteger(quantity) || quantity <= 0) {
+    return fail(
+      "INVALID_QUANTITY",
+      "Quantity must be an integer greater than 0 (brief.quantity or options.quantity)."
+    );
+  }
+
   const createdAt = new Date().toISOString();
   const briefText = serializeBrief(brief);
 
@@ -58,9 +78,18 @@ export function createSession(buyerId, sellerId, brief, options = {}) {
     try {
       db.prepare(
         `INSERT INTO sessions
-          (id, buyer_id, seller_id, status, agreed_price, brief, buyer_budget, created_at)
-         VALUES (?, ?, ?, 'NEGOTIATING', NULL, ?, ?, ?)`
-      ).run(sessionId, buyerId, sellerId, briefText, budget, createdAt);
+          (id, buyer_id, seller_id, status, agreed_price, brief, buyer_budget, quantity, expires_at, created_at)
+         VALUES (?, ?, ?, 'NEGOTIATING', NULL, ?, ?, ?, ?, ?)`
+      ).run(
+        sessionId,
+        buyerId,
+        sellerId,
+        briefText,
+        budget,
+        quantity,
+        Date.now() + SESSION_TTL_MS,
+        createdAt
+      );
       return {
         success: true,
         session: {
@@ -70,6 +99,7 @@ export function createSession(buyerId, sellerId, brief, options = {}) {
           status: "NEGOTIATING",
           brief: briefText,
           buyerBudget: budget,
+          quantity,
           agreedPrice: null,
         },
       };
@@ -90,7 +120,7 @@ export function getSession(sessionId, options = {}) {
   const db = options.db ?? getDb();
   const row = db
     .prepare(
-      "SELECT id, buyer_id, seller_id, status, agreed_price, brief, buyer_budget, delivery_payload, delivery_reject_reason FROM sessions WHERE id = ?"
+      "SELECT id, buyer_id, seller_id, status, agreed_price, brief, buyer_budget, delivery_payload, delivery_reject_reason, escrow_locked, quantity FROM sessions WHERE id = ?"
     )
     .get(sessionId);
   if (!row) return null;
@@ -104,7 +134,31 @@ export function getSession(sessionId, options = {}) {
     buyerBudget: row.buyer_budget,
     deliveryPayload: row.delivery_payload,
     deliveryRejectReason: row.delivery_reject_reason,
+    escrowLocked: row.escrow_locked ?? 0,
+    quantity: row.quantity ?? 1,
   };
+}
+
+export function expireStaleSessions(db = getDb()) {
+  const now = Date.now();
+  const stale = db
+    .prepare(
+      "SELECT id, buyer_id, status FROM sessions WHERE status IN ('NEGOTIATING', 'ESCROW_LOCKED') AND expires_at IS NOT NULL AND expires_at < ?"
+    )
+    .all(now);
+  const sweep = db.transaction(() => {
+    for (const row of stale) {
+      if (row.status === "ESCROW_LOCKED") {
+        const refunded = refundFunds(row.buyer_id, row.id, db);
+        if (!refunded.success) {
+          throw Object.assign(new Error(refunded.error.message), { sweepError: refunded.error });
+        }
+      }
+      db.prepare("UPDATE sessions SET status = 'EXPIRED' WHERE id = ?").run(row.id);
+    }
+  });
+  sweep();
+  return stale.length;
 }
 
 export function submitMove(sessionId, agentId, move, options = {}) {
@@ -156,25 +210,23 @@ export function submitMove(sessionId, agentId, move, options = {}) {
     return fail("INVALID_PRICE", "Price must be an integer greater than 0.");
   }
 
-  if (isBuyer && price > row.buyer_budget) {
+  if (price > row.buyer_budget) {
     return fail(
       "BUDGET_EXCEEDED",
       `Price ${price} exceeds the buyer budget of ${row.buyer_budget}.`
     );
   }
-  if (isSeller) {
-    const seller = db
-      .prepare("SELECT floor_price FROM agents WHERE agent_id = ?")
-      .get(row.seller_id);
-    if (!seller) {
-      return fail("SELLER_NOT_FOUND", `Seller "${row.seller_id}" is not registered.`);
-    }
-    if (price < seller.floor_price) {
-      return fail(
-        "FLOOR_EXCEEDED",
-        `Price ${price} is below the seller floor of ${seller.floor_price}.`
-      );
-    }
+  const seller = db
+    .prepare("SELECT floor_price FROM agents WHERE agent_id = ?")
+    .get(row.seller_id);
+  if (!seller) {
+    return fail("SELLER_NOT_FOUND", `Seller "${row.seller_id}" is not registered.`);
+  }
+  if (price < seller.floor_price) {
+    return fail(
+      "FLOOR_EXCEEDED",
+      `Price ${price} is below the seller floor of ${seller.floor_price}.`
+    );
   }
 
   if (action === "OFFER") {
@@ -184,17 +236,29 @@ export function submitMove(sessionId, agentId, move, options = {}) {
     };
   }
 
-  db.prepare("UPDATE sessions SET status = 'ESCROW_LOCKED', agreed_price = ? WHERE id = ?").run(
-    price,
-    sessionId
-  );
+  const lockAndAccept = db.transaction(() => {
+    const locked = lockFunds(row.buyer_id, sessionId, price, db);
+    if (!locked.success) {
+      throw Object.assign(new Error(locked.error.message), { ledgerError: locked.error });
+    }
+    db.prepare("UPDATE sessions SET status = 'ESCROW_LOCKED', agreed_price = ? WHERE id = ?").run(
+      price,
+      sessionId
+    );
+  });
+  try {
+    lockAndAccept();
+  } catch (err) {
+    if (err?.ledgerError) return { success: false, error: err.ledgerError };
+    throw err;
+  }
   return {
     success: true,
     session: { sessionId, status: "ESCROW_LOCKED", agreedPrice: price },
   };
 }
 
-export function deliverWork(sessionId, agentId, payload, options = {}) {
+export async function deliverWork(sessionId, agentId, payload, options = {}) {
   const db = options.db ?? getDb();
 
   if (typeof sessionId !== "string" || sessionId.trim() === "") {
@@ -208,7 +272,9 @@ export function deliverWork(sessionId, agentId, payload, options = {}) {
   }
 
   const row = db
-    .prepare("SELECT id, buyer_id, seller_id, status, agreed_price FROM sessions WHERE id = ?")
+    .prepare(
+      "SELECT id, buyer_id, seller_id, status, agreed_price, brief, quantity FROM sessions WHERE id = ?"
+    )
     .get(sessionId);
   if (!row) {
     return fail("SESSION_NOT_FOUND", `Session "${sessionId}" was not found.`);
@@ -223,19 +289,75 @@ export function deliverWork(sessionId, agentId, payload, options = {}) {
     );
   }
 
-  const verdict = verifyDelivery(sessionId, payload);
+  const seller = db
+    .prepare("SELECT capability FROM agents WHERE agent_id = ?")
+    .get(row.seller_id);
+  if (!seller) {
+    return fail("SELLER_NOT_FOUND", `Seller "${row.seller_id}" is not registered.`);
+  }
+
+  const inspect = options.verifyDelivery ?? verifyDelivery;
+  let verdict;
+  try {
+    verdict = await inspect(sessionId, payload, {
+      brief: row.brief,
+      capability: seller.capability,
+      quantity: row.quantity ?? 1,
+    });
+  } catch (err) {
+    return fail("INSPECTOR_UNAVAILABLE", err?.message ?? "Inspector is unavailable.");
+  }
+  const validVerdict =
+    verdict &&
+    ((verdict.success === true && verdict.status === "SETTLED") ||
+      (verdict.success === false && verdict.status === "REJECTED"));
+  if (!validVerdict) {
+    return fail("INSPECTOR_UNAVAILABLE", "Inspector returned an inconclusive verdict.");
+  }
   if (verdict.success) {
-    db.prepare(
-      "UPDATE sessions SET delivery_payload = ?, delivery_reject_reason = NULL, status = 'SETTLED' WHERE id = ?"
-    ).run(payload, sessionId);
+    const settle = db.transaction(() => {
+      const released = releaseFunds(row.seller_id, sessionId, db);
+      if (!released.success) {
+        throw Object.assign(new Error(released.error.message), { ledgerError: released.error });
+      }
+      db.prepare(
+        "UPDATE sessions SET delivery_payload = ?, delivery_reject_reason = NULL, status = 'SETTLED' WHERE id = ?"
+      ).run(payload, sessionId);
+    });
+    try {
+      settle();
+    } catch (err) {
+      if (err?.ledgerError) return { success: false, error: err.ledgerError };
+      throw err;
+    }
     return {
       success: true,
       session: { sessionId, status: "SETTLED", agreedPrice: row.agreed_price },
     };
   }
-  db.prepare(
-    "UPDATE sessions SET delivery_payload = ?, delivery_reject_reason = ?, status = 'REJECTED' WHERE id = ?"
-  ).run(payload, verdict.reason, sessionId);
+  const refund = db.transaction(() => {
+    const refunded = refundFunds(row.buyer_id, sessionId, db);
+    if (!refunded.success) {
+      throw Object.assign(new Error(refunded.error.message), { ledgerError: refunded.error });
+    }
+    const slashed = slashStake(row.seller_id, STAKE_SLASH_AMOUNT, db);
+    if (!slashed.success) {
+      throw Object.assign(new Error(slashed.error.message), { ledgerError: slashed.error });
+    }
+    const credited = creditWallet(row.buyer_id, STAKE_SLASH_AMOUNT, db);
+    if (!credited.success) {
+      throw Object.assign(new Error(credited.error.message), { ledgerError: credited.error });
+    }
+    db.prepare(
+      "UPDATE sessions SET delivery_payload = ?, delivery_reject_reason = ?, status = 'REJECTED' WHERE id = ?"
+    ).run(payload, verdict.reason, sessionId);
+  });
+  try {
+    refund();
+  } catch (err) {
+    if (err?.ledgerError) return { success: false, error: err.ledgerError };
+    throw err;
+  }
   return {
     success: true,
     session: {

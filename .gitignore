@@ -1,8 +1,21 @@
+# Dependencies
+node_modules/
+
+# Environment Variables (CRITICAL: Never commit these)
 .env
 .env.*
-node_modules/
-*.db
+!.env.example
+
+# SQLite Database files
 data/
-*.py
-__pycache__/
+*.db
+*.db-wal
+*.db-shm
+
+# AI Context & Internal Notes
 CONTEXT.md
+
+# Logs & OS files
+*.log
+.DS_Store
+Thumbs.db

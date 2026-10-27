@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import net from "node:net";
 import { getDb } from "./db.js";
 
-export const CAPABILITIES = ["image_gen"];
+export const CAPABILITIES = ["image_gen", "video_gen", "text_gen", "doc_gen", "report_gen"];
 
 const fail = (code, message) => ({ success: false, error: { code, message } });
 
@@ -67,7 +67,7 @@ export function computeHexSeal(agentId, publicKey, did) {
 
 export function registerAgent(agentData, options = {}) {
   const db = options.db ?? getDb();
-  const { agentId, publicKey, capability, floorPrice, webhookUrl, did } = agentData ?? {};
+  const { agentId, publicKey, capability, floorPrice, webhookUrl, did, profile } = agentData ?? {};
 
   if (typeof agentId !== "string" || agentId.trim() === "") {
     return fail("INVALID_AGENT_ID", "Agent ID must be a non-empty string.");
@@ -93,6 +93,20 @@ export function registerAgent(agentData, options = {}) {
   }
   const normalizedDid = typeof did === "string" && did.trim() !== "" ? did : null;
 
+  if (profile !== undefined && profile !== null && (typeof profile !== "object" || Array.isArray(profile))) {
+    return fail("INVALID_PROFILE", "Profile must be an object with optional title, description, and category.");
+  }
+  const normalizedProfile = {};
+  for (const key of ["title", "description", "category"]) {
+    const value = profile?.[key] ?? agentData?.[key];
+    if (value === undefined || value === null || value === "") continue;
+    if (typeof value !== "string") {
+      return fail("INVALID_PROFILE", `Profile ${key} must be a string when provided.`);
+    }
+    const trimmed = value.trim();
+    if (trimmed !== "") normalizedProfile[key] = trimmed;
+  }
+
   const existing = db.prepare("SELECT agent_id FROM agents WHERE agent_id = ?").get(agentId);
   if (existing) {
     return fail("DUPLICATE_AGENT_ID", `Agent ID "${agentId}" is already registered.`);
@@ -103,9 +117,9 @@ export function registerAgent(agentData, options = {}) {
   try {
     db.prepare(
       `INSERT INTO agents
-        (agent_id, public_key, capability, floor_price, webhook_url, status, hex_seal, did, created_at)
-       VALUES (?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?)`
-    ).run(agentId, publicKey, capability, floorPrice, webhookUrl, hexSeal, normalizedDid, createdAt);
+        (agent_id, public_key, capability, floor_price, webhook_url, status, hex_seal, did, title, description, category, created_at)
+       VALUES (?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?, ?, ?, ?)`
+    ).run(agentId, publicKey, capability, floorPrice, webhookUrl, hexSeal, normalizedDid, normalizedProfile.title ?? null, normalizedProfile.description ?? null, normalizedProfile.category ?? null, createdAt);
   } catch (err) {
     if (err?.code === "SQLITE_CONSTRAINT_PRIMARYKEY" || err?.code === "SQLITE_CONSTRAINT_UNIQUE") {
       return fail("DUPLICATE_AGENT_ID", `Agent ID "${agentId}" is already registered.`);
@@ -124,6 +138,9 @@ export function registerAgent(agentData, options = {}) {
       status: "ACTIVE",
       hexSeal,
       ...(normalizedDid ? { did: normalizedDid } : {}),
+      ...(normalizedProfile.title ? { title: normalizedProfile.title } : {}),
+      ...(normalizedProfile.description ? { description: normalizedProfile.description } : {}),
+      ...(normalizedProfile.category ? { category: normalizedProfile.category } : {}),
     },
   };
 }
