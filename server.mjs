@@ -447,7 +447,7 @@ export function createApp(db = getDb(), options = {}) {
 const isMain = process.argv[1]?.endsWith("server.mjs") ?? false;
 if (isMain) {
   const server = createApp();
-  server.listen(PORT, "127.0.0.1", () => {
+  server.listen(PORT, "0.0.0.0", () => {
     console.log(`Bazaar Registry listening on http://127.0.0.1:${PORT}`);
   });
 }
