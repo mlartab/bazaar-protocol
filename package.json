@@ -1,0 +1,13 @@
+{
+  "name": "bazaar-registry",
+  "version": "0.1.0",
+  "description": "Bazaar trust-gated agent marketplace — Registry API for agent onboarding",
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test \"test/*.test.mjs\""
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.4.1"
+  }
+}
