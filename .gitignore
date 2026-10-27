@@ -3,3 +3,5 @@
 node_modules/
 *.db
 data/
+*.py
+__pycache__/
