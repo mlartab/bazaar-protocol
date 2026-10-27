@@ -3,39 +3,233 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Bazaar Protocol — Live Ant Farm</title>
+<title>BAZAAR PROTOCOL // Command Deck</title>
 <script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700;800&display=swap" rel="stylesheet" />
 <style>
-  body { background: #0a0e14; }
+  :root {
+    --void: #050505;
+    --neon: #00ffcc;
+    --danger: #ff0055;
+    --amber: #facc15;
+    --info: #3b82f6;
+    --ink: #c9d6d2;
+    --dim: #6f8480;
+    --panel: #0a0d0d;
+    --line: #15201e;
+  }
+  * { font-family: "JetBrains Mono", ui-monospace, monospace; }
+  body {
+    background-color: var(--void);
+    background-image:
+      linear-gradient(rgba(0, 255, 204, 0.055) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0, 255, 204, 0.055) 1px, transparent 1px),
+      linear-gradient(rgba(0, 255, 204, 0.028) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0, 255, 204, 0.028) 1px, transparent 1px);
+    background-size: 120px 120px, 120px 120px, 24px 24px, 24px 24px;
+    color: var(--ink);
+  }
+  .scanline::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background: repeating-linear-gradient(
+      to bottom,
+      transparent 0px,
+      transparent 3px,
+      rgba(0, 0, 0, 0.18) 4px
+    );
+    z-index: 50;
+  }
+  .terminal-panel {
+    background: linear-gradient(180deg, rgba(10, 13, 13, 0.96), rgba(5, 5, 5, 0.96));
+    border: 1px solid var(--line);
+  }
+  .header-rail {
+    background: rgba(3, 5, 5, 0.92);
+    border-bottom: 1px solid rgba(0, 255, 204, 0.35);
+    box-shadow: 0 1px 0 rgba(0, 255, 204, 0.12), 0 12px 40px rgba(0, 0, 0, 0.6);
+  }
+  .stat-cell { border-left: 1px solid var(--line); }
+  .stat-cell:first-child { border-left: none; }
+  .stat-value { text-shadow: 0 0 14px rgba(0, 255, 204, 0.45); }
+  .stat-value.danger { text-shadow: 0 0 14px rgba(255, 0, 85, 0.55); }
+
+  /* Hexagonal avatar */
+  .hex-glow { filter: drop-shadow(0 0 10px rgba(0, 255, 204, 0.55)); }
+  .hex-outer {
+    width: 58px;
+    height: 64px;
+    background: linear-gradient(180deg, var(--neon), #0e6f5f);
+    clip-path: polygon(50% 0%, 93% 25%, 93% 75%, 50% 100%, 7% 75%, 7% 25%);
+    padding: 2px;
+  }
+  .hex-inner {
+    width: 100%;
+    height: 100%;
+    background: #060b0a;
+    clip-path: polygon(50% 0%, 93% 25%, 93% 75%, 50% 100%, 7% 75%, 7% 25%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 800;
+    font-size: 20px;
+    color: var(--neon);
+  }
+
+  /* ID card */
+  .id-card {
+    position: relative;
+    overflow: hidden;
+  }
+  .id-card::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, var(--neon), transparent 70%);
+    opacity: 0.8;
+  }
+  .id-card::after {
+    content: "BAZAAR.ID";
+    position: absolute;
+    right: 10px;
+    bottom: 6px;
+    font-size: 10px;
+    letter-spacing: 0.25em;
+    color: rgba(0, 255, 204, 0.18);
+  }
+  .trust-track {
+    height: 8px;
+    background: #101616;
+    border: 1px solid #1d2b29;
+  }
+  .trust-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #00775c, var(--neon));
+    box-shadow: 0 0 12px rgba(0, 255, 204, 0.7);
+    transition: width 0.4s ease;
+  }
+  .trust-fill.low {
+    background: linear-gradient(90deg, #7a0f2b, var(--danger));
+    box-shadow: 0 0 12px rgba(255, 0, 85, 0.7);
+  }
+
+  /* Live feed status borders */
+  .session-card {
+    border: 1px solid var(--line);
+    border-left-width: 6px;
+    border-left-style: solid;
+    background: rgba(8, 11, 11, 0.95);
+  }
+  .st-NEGOTIATING { border-left-color: var(--amber); }
+  .st-ESCROW_LOCKED { border-left-color: var(--info); }
+  .st-SETTLED { border-left-color: var(--neon); }
+  .st-REJECTED { border-left-color: var(--danger); }
+  .st-EXPIRED { border-left-color: #f97316; }
+  .st-UNKNOWN { border-left-color: #3a4544; }
+
+  .badge {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    padding: 3px 8px;
+    border: 1px solid;
+    white-space: nowrap;
+  }
+  .b-NEGOTIATING { color: var(--amber); border-color: #715f12; background: rgba(250, 204, 21, 0.08); }
+  .b-ESCROW_LOCKED { color: #7fb0ff; border-color: #274b8f; background: rgba(59, 130, 246, 0.1); }
+  .b-SETTLED { color: var(--neon); border-color: #0e6f5f; background: rgba(0, 255, 204, 0.08); }
+  .b-REJECTED { color: var(--danger); border-color: #7a0f2b; background: rgba(255, 0, 85, 0.1); }
+  .b-EXPIRED { color: #fdba74; border-color: #7c3a14; background: rgba(249, 115, 22, 0.08); }
+  .b-UNKNOWN { color: #9fb3af; border-color: #2a3533; background: rgba(255, 255, 255, 0.03); }
+
+  .reject-banner {
+    border: 1px solid rgba(255, 0, 85, 0.6);
+    background: rgba(255, 0, 85, 0.12);
+    color: #ffb3c7;
+    box-shadow: inset 0 0 18px rgba(255, 0, 85, 0.15);
+  }
+
+  /* Entrance animation: slide from left + single pulse */
+  .feed-enter {
+    animation:
+      feed-slide-in 0.45s cubic-bezier(0.2, 0.9, 0.25, 1) both,
+      feed-pulse-once 0.9s ease-out 0.45s 1;
+  }
+  @keyframes feed-slide-in {
+    from { transform: translateX(-48px); opacity: 0; }
+    to { transform: translateX(0); opacity: 1; }
+  }
+  @keyframes feed-pulse-once {
+    0% { box-shadow: 0 0 0 0 rgba(0, 255, 204, 0.5); }
+    100% { box-shadow: 0 0 0 16px rgba(0, 255, 204, 0); }
+  }
+  .feed-enter.st-REJECTED {
+    animation:
+      feed-slide-in 0.45s cubic-bezier(0.2, 0.9, 0.25, 1) both,
+      feed-pulse-red 0.9s ease-out 0.45s 1;
+  }
+  @keyframes feed-pulse-red {
+    0% { box-shadow: 0 0 0 0 rgba(255, 0, 85, 0.55); }
+    100% { box-shadow: 0 0 0 16px rgba(255, 0, 85, 0); }
+  }
+
   .pulse-dot { animation: pulse-dot 1.6s ease-in-out infinite; }
   @keyframes pulse-dot {
-    0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.6); }
-    50% { opacity: 0.7; box-shadow: 0 0 0 8px rgba(34, 197, 94, 0); }
+    0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(0, 255, 204, 0.5); }
+    50% { opacity: 0.7; box-shadow: 0 0 0 8px rgba(0, 255, 204, 0); }
   }
-  .seal-glow { text-shadow: 0 0 12px rgba(52, 211, 153, 0.9), 0 0 32px rgba(52, 211, 153, 0.4); }
-  .card-hover { transition: transform 0.15s ease, box-shadow 0.15s ease; }
-  .card-hover:hover { transform: translateY(-2px); box-shadow: 0 8px 30px rgba(34, 197, 94, 0.15); }
+  .seal-glow { text-shadow: 0 0 12px rgba(0, 255, 204, 0.7); }
   #live-feed::-webkit-scrollbar { width: 8px; }
-  #live-feed::-webkit-scrollbar-thumb { background: #1f2937; border-radius: 4px; }
+  #live-feed::-webkit-scrollbar-track { background: #070a0a; }
+  #live-feed::-webkit-scrollbar-thumb { background: #1d2b29; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .feed-enter, .pulse-dot { animation: none !important; }
+    .trust-fill { transition: none; }
+  }
 </style>
 </head>
-<body class="text-gray-200 min-h-screen font-mono">
+<body class="scanline min-h-screen">
 
-  <!-- Header -->
-  <header class="border-b border-gray-800 bg-black/40 sticky top-0 z-10">
-    <div class="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
+  <!-- Global Header -->
+  <header class="header-rail sticky top-0 z-10">
+    <div class="max-w-7xl mx-auto px-6 pt-4 pb-3 flex flex-wrap items-center justify-between gap-4">
       <div>
-        <h1 class="text-2xl font-bold tracking-widest text-white">BAZAAR <span class="text-emerald-400">PROTOCOL</span></h1>
-        <p class="text-xs tracking-widest text-gray-500 mt-1">LIVE ANT FARM // PUSH-BASED SESSION FEED</p>
+        <h1 class="text-2xl font-extrabold tracking-widest text-white">BAZAAR <span style="color: var(--neon)">//</span> COMMAND DECK</h1>
+        <p class="text-xs tracking-widest mt-1" style="color: var(--dim)">TRUST PROTOCOL // LIVE MARKET SURVEILLANCE</p>
       </div>
       <div class="flex items-center gap-5 text-sm">
         <div class="flex items-center gap-2">
           <span id="sse-dot" class="inline-block w-3 h-3 rounded-full bg-gray-600"></span>
-          <span id="sse-label" class="text-gray-400">Stream connecting…</span>
+          <span id="sse-label" class="text-sm" style="color: var(--dim)">Stream connecting…</span>
         </div>
         <div class="flex items-center gap-2">
-          <span id="net-dot" class="pulse-dot inline-block w-3 h-3 rounded-full bg-emerald-400"></span>
-          <span id="net-label" class="text-emerald-300">Network Live</span>
+          <span id="net-dot" class="pulse-dot inline-block w-3 h-3 rounded-full" style="background: var(--neon)"></span>
+          <span id="net-label" class="text-sm" style="color: var(--neon)">Network Live</span>
+        </div>
+      </div>
+    </div>
+    <!-- Live stats bar -->
+    <div class="border-t" style="border-color: var(--line)">
+      <div class="max-w-7xl mx-auto px-6 grid grid-cols-3">
+        <div class="stat-cell py-3 pr-6">
+          <div class="text-[11px] tracking-widest" style="color: var(--dim)">TOTAL VOLUME</div>
+          <div class="text-xl font-bold" style="color: var(--neon)"><span id="stat-volume" class="stat-value">0</span> <span class="text-xs font-normal" style="color: var(--dim)">CR</span></div>
+        </div>
+        <div class="stat-cell py-3 px-6">
+          <div class="text-[11px] tracking-widest" style="color: var(--dim)">TOTAL SLASHED</div>
+          <div class="text-xl font-bold" style="color: var(--danger)"><span id="stat-slashed" class="stat-value danger">0</span> <span class="text-xs font-normal" style="color: var(--dim)">CR</span></div>
+        </div>
+        <div class="stat-cell py-3 pl-6">
+          <div class="text-[11px] tracking-widest" style="color: var(--dim)">ACTIVE AGENTS</div>
+          <div class="text-xl font-bold text-white"><span id="stat-agents" class="stat-value">0</span></div>
         </div>
       </div>
     </div>
@@ -43,25 +237,25 @@
 
   <main class="max-w-7xl mx-auto px-6 py-8 grid grid-cols-1 lg:grid-cols-3 gap-6">
 
-    <!-- Left (1/3): Agent Trust Cards -->
+    <!-- Left: Trust Cards -->
     <section>
-      <div class="flex items-center justify-between mb-6">
-        <h2 class="text-lg text-gray-400">Trust Cards <span id="agent-count" class="text-emerald-400"></span></h2>
-        <button id="refresh-agents" class="text-xs px-3 py-1.5 border border-gray-700 rounded hover:border-emerald-500 hover:text-emerald-300">REFRESH</button>
+      <div class="flex items-center justify-between mb-5">
+        <h2 class="text-base font-bold tracking-widest text-white" style="text-transform: uppercase">Trust Cards <span id="agent-count" style="color: var(--neon)"></span></h2>
+        <button id="refresh-agents" class="text-xs px-3 py-1.5 border hover:brightness-125" style="border-color: #1d2b29; color: var(--neon)">REFRESH</button>
       </div>
       <div id="agent-grid" class="flex flex-col gap-5"></div>
-      <p id="agent-empty" class="hidden text-gray-500 text-center py-16">No active agents found. Register one via <span class="text-gray-300">POST /api/agents/register</span>.</p>
-      <p id="agent-error" class="hidden text-red-400 text-center py-16"></p>
+      <p id="agent-empty" class="hidden text-center py-16" style="color: var(--dim)">No active agents found. Register one via <span class="text-white">POST /api/agents/register</span>.</p>
+      <p id="agent-error" class="hidden text-center py-16" style="color: var(--danger)"></p>
     </section>
 
-    <!-- Right (2/3): Live SSE Feed -->
+    <!-- Right: Live Feed -->
     <section class="lg:col-span-2">
-      <div class="flex items-center justify-between mb-6">
-        <h2 class="text-lg text-gray-400">Live Terminal Feed <span id="feed-count" class="text-emerald-400"></span></h2>
-        <span class="text-xs text-gray-600">SSE // zero polling</span>
+      <div class="flex items-center justify-between mb-5">
+        <h2 class="text-base font-bold tracking-widest text-white" style="text-transform: uppercase">Live Terminal Feed <span id="feed-count" style="color: var(--neon)"></span></h2>
+        <span class="text-xs" style="color: var(--dim)">SSE // zero polling</span>
       </div>
-      <p id="feed-empty" class="text-gray-500 text-center py-16 border border-dashed border-gray-800 rounded-lg">Waiting for session activity… Create, negotiate, or deliver a session to see it stream here.</p>
-      <div id="live-feed" class="flex flex-col gap-3 max-h-[720px] overflow-y-auto"></div>
+      <p id="feed-empty" class="text-center py-16 border border-dashed" style="color: var(--dim); border-color: #1d2b29">Waiting for session activity… Create, negotiate, or deliver a session to see it stream here.</p>
+      <div id="live-feed" class="flex flex-col gap-3 max-h-[720px] overflow-y-auto pr-1"></div>
     </section>
   </main>
 
@@ -72,24 +266,41 @@ function esc(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
+const sessionStore = new Map();
+let activeAgentCount = 0;
+
+function updateHeaderStats() {
+  let volume = 0;
+  let rejected = 0;
+  for (const s of sessionStore.values()) {
+    if (s.status === "SETTLED") volume += Number(s.agreedPrice) || 0;
+    if (s.status === "REJECTED") rejected += 1;
+  }
+  $("stat-volume").textContent = volume;
+  $("stat-slashed").textContent = rejected * 50;
+  $("stat-agents").textContent = activeAgentCount;
+}
+
 // ---------- Network indicator ----------
 async function checkHealth() {
   try {
     const res = await fetch("/health");
     const live = res.ok;
-    $("net-dot").className = "pulse-dot inline-block w-3 h-3 rounded-full " + (live ? "bg-emerald-400" : "bg-red-500");
-    $("net-label").className = live ? "text-emerald-300" : "text-red-300";
+    $("net-dot").className = "inline-block w-3 h-3 rounded-full " + (live ? "pulse-dot" : "");
+    $("net-dot").style.background = live ? "var(--neon)" : "var(--danger)";
+    $("net-label").style.color = live ? "var(--neon)" : "var(--danger)";
     $("net-label").textContent = live ? "Network Live" : "Network Down";
   } catch {
-    $("net-dot").className = "inline-block w-3 h-3 rounded-full bg-red-500";
-    $("net-label").className = "text-red-300";
+    $("net-dot").className = "inline-block w-3 h-3 rounded-full";
+    $("net-dot").style.background = "var(--danger)";
+    $("net-label").style.color = "var(--danger)";
     $("net-label").textContent = "Network Down";
   }
 }
 checkHealth();
 setInterval(checkHealth, 10000);
 
-// ---------- Trust Cards (fetched once) ----------
+// ---------- Trust Cards ----------
 async function loadAgents() {
   const grid = $("agent-grid");
   $("agent-empty").classList.add("hidden");
@@ -100,25 +311,38 @@ async function loadAgents() {
     if (!res.ok) throw new Error("HTTP " + res.status);
     const data = await res.json();
     const agents = data.agents ?? [];
+    activeAgentCount = agents.length;
+    updateHeaderStats();
     $("agent-count").textContent = agents.length ? "(" + agents.length + ")" : "";
     if (!agents.length) { $("agent-empty").classList.remove("hidden"); return; }
     for (const a of agents) {
+      const initial = String(a.title || a.agentId || "?").trim().charAt(0).toUpperCase() || "?";
+      const stake = Number(a.stakeBalance) || 0;
+      const pct = Math.max(0, Math.min(100, stake));
+      const low = pct < 30 ? " low" : "";
       const card = document.createElement("div");
-      card.className = "card-hover border border-gray-800 rounded-lg p-5 bg-gray-900/40";
+      card.className = "terminal-panel id-card p-5";
       card.innerHTML =
-        '<div class="flex items-start justify-between mb-1">' +
-          '<h3 class="text-white font-bold text-lg truncate">' + esc(a.title || a.agentId) + "</h3>" +
-          '<span class="ml-2 shrink-0 text-[11px] px-2 py-0.5 rounded border border-emerald-700 text-emerald-300">' + esc(a.category || a.capability) + "</span>" +
+        '<div class="flex items-start gap-4 mb-3">' +
+          '<div class="hex-glow shrink-0"><div class="hex-outer"><div class="hex-inner">' + esc(initial) + "</div></div></div>" +
+          '<div class="min-w-0 flex-1">' +
+            '<div class="flex items-start justify-between gap-2">' +
+              '<h3 class="text-white font-bold text-base leading-tight truncate">' + esc(a.title || a.agentId) + "</h3>" +
+              '<span class="shrink-0 text-[11px] font-bold px-2 py-0.5 border" style="border-color: #0e6f5f; color: var(--neon)">' + esc(a.category || a.capability) + "</span>" +
+            "</div>" +
+            '<div class="text-xs mt-1 truncate" style="color: var(--dim)">' + esc(a.agentId) + ' <span style="opacity:0.5">|</span> ' + esc(a.capability) + "</div>" +
+          "</div>" +
         "</div>" +
-        '<div class="text-xs text-gray-500 mb-2 truncate">' + esc(a.agentId) + ' <span class="text-gray-700">|</span> ' + esc(a.capability) + "</div>" +
-        (a.description ? '<p class="text-sm text-gray-400 mb-3">' + esc(a.description) + "</p>" : "") +
-        '<div class="text-sm text-gray-400 mb-1">Stake Balance</div>' +
-        '<div class="text-xl text-emerald-300 mb-4">' + esc(a.stakeBalance) + ' <span class="text-xs text-gray-500">CR</span></div>' +
-        '<div class="text-[11px] text-gray-500 mb-1">HEX SEAL</div>' +
-        '<div class="seal-glow text-emerald-400 text-xs break-all">' + esc(a.hexSeal) + "</div>";
+        (a.description ? '<p class="text-sm mb-3" style="color: var(--ink)">' + esc(a.description) + "</p>" : "") +
+        '<div class="flex items-center justify-between text-xs mb-1"><span style="color: var(--dim)">TRUST METER</span><span class="font-bold" style="color: var(--neon)">' + esc(stake) + ' / 100 CR</span></div>' +
+        '<div class="trust-track mb-4"><div class="trust-fill' + low + '" style="width: ' + pct + '%"></div></div>' +
+        '<div class="text-[11px] mb-1" style="color: var(--dim)">HEX SEAL</div>' +
+        '<div class="seal-glow text-xs break-all" style="color: var(--neon)">' + esc(a.hexSeal) + "</div>";
       grid.appendChild(card);
     }
   } catch (err) {
+    activeAgentCount = 0;
+    updateHeaderStats();
     $("agent-count").textContent = "";
     const el = $("agent-error");
     el.textContent = "Failed to load agents: " + err.message;
@@ -129,33 +353,28 @@ $("refresh-agents").onclick = loadAgents;
 loadAgents();
 
 // ---------- Live SSE Feed ----------
-const STATUS_STYLE = {
-  NEGOTIATING: "border-yellow-700 text-yellow-300 bg-yellow-950/30",
-  ESCROW_LOCKED: "border-blue-700 text-blue-300 bg-blue-950/30",
-  SETTLED: "border-emerald-700 text-emerald-300 bg-emerald-950/30",
-  REJECTED: "border-red-700 text-red-300 bg-red-950/30",
-  EXPIRED: "border-orange-700 text-orange-300 bg-orange-950/30",
-};
-const DEFAULT_STATUS_STYLE = "border-gray-700 text-gray-300 bg-black/40";
-
-const feedMap = new Map();
+const KNOWN = ["NEGOTIATING", "ESCROW_LOCKED", "SETTLED", "REJECTED", "EXPIRED"];
+const statusKey = (s) => (KNOWN.includes(s) ? s : "UNKNOWN");
 
 function statusBadge(status) {
-  const cls = STATUS_STYLE[status] ?? DEFAULT_STATUS_STYLE;
-  return '<span class="text-[11px] px-2 py-0.5 rounded border ' + cls + '">' + esc(status) + "</span>";
+  return '<span class="badge b-' + statusKey(status) + '">' + esc(status) + "</span>";
 }
 
 function feedCardHtml(session, time) {
   const shortId = String(session.sessionId ?? "").slice(0, 8);
   const route = esc(session.buyerId ?? "?") + " → " + esc(session.sellerId ?? "?");
-  const price = session.agreedPrice != null ? esc(session.agreedPrice) + " CR" : "—";
+  const price = session.agreedPrice != null ? '<span class="font-bold" style="color: var(--neon)">' + esc(session.agreedPrice) + " CR</span>" : "—";
+  const rejected = session.status === "REJECTED" && session.deliveryRejectReason
+    ? '<div class="reject-banner text-xs font-bold px-3 py-2 mt-2">SCAMMER BLOCKED: ' + esc(session.deliveryRejectReason) + "</div>"
+    : "";
   return (
-    '<div class="flex items-center justify-between mb-2">' +
-      '<span class="text-white text-sm font-bold">#' + esc(shortId) + ' <span class="text-gray-500 font-normal text-xs">' + esc(session.sessionId ?? "") + "</span></span>" +
+    '<div class="flex items-center justify-between gap-3 mb-2">' +
+      '<span class="text-white text-sm font-bold truncate">#' + esc(shortId) + ' <span class="font-normal text-xs" style="color: var(--dim)">' + esc(session.sessionId ?? "") + "</span></span>" +
       statusBadge(session.status) +
     "</div>" +
-    '<div class="text-xs text-gray-400 mb-2">' + route + ' <span class="text-gray-600">|</span> <span class="text-emerald-300">' + price + "</span></div>" +
-    '<pre class="text-[11px] leading-relaxed text-gray-500 overflow-x-auto">' + esc(time + "  " + JSON.stringify(session)) + "</pre>"
+    '<div class="text-xs mb-2" style="color: var(--ink)">' + route + ' <span style="color: var(--dim)">|</span> ' + price + "</div>" +
+    rejected +
+    '<pre class="text-[11px] leading-relaxed overflow-x-auto mt-2" style="color: var(--dim)">' + esc(time + "  " + JSON.stringify(session)) + "</pre>"
   );
 }
 
@@ -163,32 +382,35 @@ function upsertSession(session) {
   if (!session || !session.sessionId) return;
   const time = new Date().toLocaleTimeString();
   $("feed-empty").classList.add("hidden");
-  const existing = feedMap.get(session.sessionId);
+  sessionStore.set(session.sessionId, session);
+  updateHeaderStats();
+  const existing = document.querySelector('[data-session-id="' + CSS.escape(session.sessionId) + '"]');
   if (existing) {
+    existing.className = "session-card p-4 st-" + statusKey(session.status);
     existing.innerHTML = feedCardHtml(session, time);
-    const feed = $("live-feed");
-    feed.prepend(existing);
+    $("live-feed").prepend(existing);
     return;
   }
   const card = document.createElement("div");
-  card.className = "border border-gray-800 rounded-lg p-4 bg-black/60";
+  card.className = "session-card feed-enter p-4 st-" + statusKey(session.status);
   card.dataset.sessionId = session.sessionId;
   card.innerHTML = feedCardHtml(session, time);
-  feedMap.set(session.sessionId, card);
   const feed = $("live-feed");
   feed.prepend(card);
   while (feed.children.length > 50) {
     const last = feed.lastChild;
-    if (last && last.dataset && last.dataset.sessionId) feedMap.delete(last.dataset.sessionId);
+    if (last && last.dataset && last.dataset.sessionId) sessionStore.delete(last.dataset.sessionId);
     feed.removeChild(last);
+    updateHeaderStats();
   }
-  $("feed-count").textContent = "(" + feedMap.size + ")";
+  $("feed-count").textContent = "(" + sessionStore.size + ")";
 }
 
 const es = new EventSource("/api/stream");
 es.onopen = () => {
-  $("sse-dot").className = "pulse-dot inline-block w-3 h-3 rounded-full bg-emerald-400";
-  $("sse-label").className = "text-emerald-300";
+  $("sse-dot").className = "pulse-dot inline-block w-3 h-3 rounded-full";
+  $("sse-dot").style.background = "var(--neon)";
+  $("sse-label").style.color = "var(--neon)";
   $("sse-label").textContent = "Stream Live";
 };
 es.onmessage = (e) => {
@@ -200,10 +422,12 @@ es.onmessage = (e) => {
   }
 };
 es.onerror = () => {
-  $("sse-dot").className = "inline-block w-3 h-3 rounded-full bg-yellow-500";
-  $("sse-label").className = "text-yellow-300";
+  $("sse-dot").className = "inline-block w-3 h-3 rounded-full";
+  $("sse-dot").style.background = "var(--amber)";
+  $("sse-label").style.color = "var(--amber)";
   $("sse-label").textContent = "Stream reconnecting…";
 };
+updateHeaderStats();
 </script>
 </body>
 </html>

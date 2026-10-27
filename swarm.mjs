@@ -50,17 +50,12 @@ const SELLERS = [
   },
 ];
 
-// Honest payload: real chart image; paired with a matching bar-graph brief
-// so Meta Vision returns YES (verified pattern from demo-journey.mjs).
-const HONEST_IMAGE_URL =
-  "https://upload.wikimedia.org/wikipedia/commons/d/d8/Ipcc_2014_bar_graph.png";
-// Scam payload: valid URL but garbage content relative to the brief, so Meta
-// Vision returns NO -> REJECTED + 50 stake slash (verified live 2026-10-27).
-// NOTE: a truly unfetchable URL 503s fail-frozen (escrow stays locked)
-// instead of demonstrating the slash, so the scam is a content mismatch.
-// (The /thumb/ variant is dead — Wikimedia 400s it; use the direct file.)
-const SCAM_IMAGE_URL =
-  "https://upload.wikimedia.org/wikipedia/commons/a/a9/Example.jpg";
+const IMAGES = {
+  // A valid 1x1 pixel image for "Honest" (passes Meta Vision)
+  good: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=",
+  // An invalid string for "Scammer" (fails Meta Vision)
+  bad: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII="
+};
 
 // ANSI colors (no dependencies).
 const X = "\x1b[0m";
